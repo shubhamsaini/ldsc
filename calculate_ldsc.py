@@ -21,6 +21,7 @@ To do:
 import numpy as np
 import pandas as pd
 from cyvcf2 import VCF
+import allel
 
 import argparse
 import sys
@@ -123,6 +124,11 @@ def main():
     if not args.annot:
         annot=None
 
+    if args.region:
+        region = args.region
+    else:
+        region=None
+
 
 ### Load the BIM file ###
     bim_data = pd.read_csv(BIM_FILE, names=["CHR","SNP","cM","BP","REF","ALT"], delim_whitespace=True)
@@ -132,33 +138,54 @@ def main():
 ### Load Genotypes from the VCF ###
     keep_snps = []
     genotypes = []
-    count = 0
-    vcf = VCF(VCF_FILE, samples=samples)
-    if args.region:
-        vcf_iter = vcf(args.region)
-    else:
-        vcf_iter = vcf()
-    for v in vcf_iter:
-        count = count+1
-        if count%1000 == 0:
-            print("Processed %d variants"%(count))
+    # count = 0
+    # vcf = VCF(VCF_FILE, samples=samples)
+    # if args.region:
+    #     vcf_iter = vcf(args.region)
+    # else:
+    #     vcf_iter = vcf()
+    # for v in vcf_iter:
+    #     count = count+1
+    #     if count%1000 == 0:
+    #         print("Processed %d variants"%(count))
+    #
+    #     if str(v.ID) not in bim_snps:
+    #         continue
+    #
+    #     alleles, counts = np.unique(np.array(v.genotypes)[:,0:2].flatten(), return_counts=True)
+    #     if 1 in counts: ### exclude singletons
+    #         continue
+    #
+    #     if len(vcf.samples) in counts: ### Exclude variants with MAF=0
+    #         continue
+    #
+    #     genotypes.append(normalize_gt(list(np.sum(np.array(v.genotypes)[:,0:2], axis=1))))
+    #     keep_snps.append(str(v.ID))
 
-        if str(v.ID) not in bim_snps:
+
+    callset = allel.read_vcf(VCF_FILE, region=region, samples=samples)
+    genotype_array = callset['calldata/GT']
+
+    for i in range(genotype_array.shape[0]):
+        if i%1000 == 0:
+            print("Processed %d variants"%(i))
+
+        ID = callset['variants/ID'][i]
+        if ID not in bim_snps:
             continue
 
-        alleles, counts = np.unique(np.array(v.genotypes)[:,0:2].flatten(), return_counts=True)
+        alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
         if 1 in counts: ### exclude singletons
             continue
 
-        if len(vcf.samples) in counts: ### Exclude variants with MAF=0
+        if callset['samples'].shape[0] in counts: ### Exclude variants with MAF=0
             continue
 
-        genotypes.append(normalize_gt(list(np.sum(np.array(v.genotypes)[:,0:2], axis=1))))
-        keep_snps.append(v.POS)
-
+        genotypes.append(normalize_gt(np.sum(genotype_array[i,:,:], axis=1)))
+        keep_snps.append(ID)
 
     genotypes = np.array(genotypes).T
-    bim_data = bim_data[bim_data.BP.isin(keep_snps)]
+    bim_data = bim_data[bim_data.SNP.isin(keep_snps)]
 
 ### Find the left most snp to be included in LD score calculation of snp i ###
     if args.ld_wind_cm:
@@ -175,7 +202,7 @@ def main():
     if samples is not None:
         m, n = len(coords), len(samples)
     else:
-        m, n = len(coords), len(vcf.samples)
+        m, n = len(coords), callset['samples'].shape[0]
     current_snp = 0
     block_sizes = np.array(np.arange(m) - block_left)
     block_sizes = np.ceil(block_sizes / chunk_size)*chunk_size
@@ -255,4 +282,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
