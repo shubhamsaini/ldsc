@@ -184,6 +184,7 @@ def main():
 
         genotypes[count] = (normalize_gt(np.sum(genotype_array[i,:,:], axis=1)))
         keep_snps.append(ID)
+        count += 1
 
     genotypes = genotypes[0:count]
     genotypes = np.array(genotypes).T
