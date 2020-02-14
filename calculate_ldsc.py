@@ -137,7 +137,6 @@ def main():
 
 ### Load Genotypes from the VCF ###
     keep_snps = []
-    genotypes = []
     # count = 0
     # vcf = VCF(VCF_FILE, samples=samples)
     # if args.region:
@@ -165,6 +164,8 @@ def main():
 
     callset = allel.read_vcf(VCF_FILE, region=region, samples=samples)
     genotype_array = callset['calldata/GT']
+    genotypes = np.zeros((genotype_array.shape[0],genotype_array.shape[1]))
+    count = 0
 
     for i in range(genotype_array.shape[0]):
         if i%1000 == 0:
@@ -181,9 +182,10 @@ def main():
         if callset['samples'].shape[0] in counts: ### Exclude variants with MAF=0
             continue
 
-        genotypes.append(normalize_gt(np.sum(genotype_array[i,:,:], axis=1)))
+        genotypes[count] = (normalize_gt(np.sum(genotype_array[i,:,:], axis=1)))
         keep_snps.append(ID)
 
+    genotypes = genotypes[0:count]
     genotypes = np.array(genotypes).T
     bim_data = bim_data[bim_data.SNP.isin(keep_snps)]
 
