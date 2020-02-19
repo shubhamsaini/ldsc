@@ -16,7 +16,8 @@ Usage: ./calculate_ldsc.py \
 To do:
 1. Add support for STRs
     - Done
-2. Add support for annotations needed for partioned heritability
+2. Output M and M_5_50 file
+3. Add support for annotations needed for partioned heritability
 
 """
 import numpy as np
@@ -104,6 +105,8 @@ def main():
     parser.add_argument("--bim", help="Input BIM file with CM information, if using with --ld-wind-cm", required=False, type=str)
     parser.add_argument("--out", help="Output directory name", required=True, type=str)
     parser.add_argument("--ld-wind-cm", help="Specify the window size to be used for estimating LD Scores in units of centiMorgans (cM)", required=False, type=float)
+    parser.add_argument("--ld-wind-kb", help="Specify the window size to be used for estimating LD Scores in units of kilobase-pairs (kb)", required=False, type=int)
+    parser.add_argument("--ld-wind-snps", help="Specify the window size to be used for estimating LD Scores in units of # of SNPs.", required=False, type=int)
     parser.add_argument("--keep", help="File with individuals to include in LD Score estimation", required=False, type=str)
     parser.add_argument("--chunk-size", help="Chunk size for LD Score calculation. Use the default.", required=False, type=int, default=50)
     parser.add_argument("--annot", help="Filename prefix for annotation file for partitioned LD Score estimation.", required=False, type=str)
@@ -114,9 +117,6 @@ def main():
 
 
     VCF_FILE = args.vcf
-
-    if args.bim:
-        BIM_FILE = args.bim
 
     if args.keep:
         SAMPLES_FILE = args.keep
@@ -139,13 +139,25 @@ def main():
     else:
         region=None
 
+    x = np.array((args.ld_wind_kb, args.ld_wind_cm, args.ld_wind_snps), dtype=bool)
+    if np.sum(x) != 1:
+        sys.exit('Must specify exactly one --ld-wind option')
 
-### Load the BIM file ###
-    bim_data = pd.read_csv(BIM_FILE, names=["CHR","SNP","cM","BP","REF","ALT"], delim_whitespace=True)
-    bim_snps = list(bim_data['SNP'].values)
+
+    if args.ld_wind_cm:
+        if not args.bim:
+            print("--ld-wind-cm requires a BIM file with CM information")
+            sys.exit("Terminated")
+        else: ### Load the BIM file ###
+            bim_data = pd.read_csv(BIM_FILE, names=["CHR","SNP","cM","BP","REF","ALT"], delim_whitespace=True)
+            bim_snps = list(bim_data['SNP'].values)
 
 
-### Load Alleles information
+### Load meta data Information per record
+### Used for finding STR allele lengths
+### Used to create bim_data DF when BIM file not used
+    print("Loading meta data information")
+    meta_data = []
     vcf = VCF(VCF_FILE, samples=samples)
     if args.region:
         vcf_iter = vcf(args.region)
@@ -155,9 +167,15 @@ def main():
     for v in vcf_iter:
         alleles = [len(v.REF)]+[len(i) for i in v.ALT]
         alleles_to_bases[str(v.ID)] = dict(zip(range(len(alleles)), alleles))
+        meta_data.append([v.CHROM, v.ID, v.POS])
+
+    if not args.bim:
+        bim_data = pd.DataFrame(meta_data, columns=["CHR","SNP","BP"])
+        bim_snps = list(bim_data['SNP'].values)
 
 
 ### Load Genotypes from the VCF ###
+    print("Loading Genotypes")
     keep_snps = []
     # count = 0
     # vcf = VCF(VCF_FILE, samples=samples)
@@ -229,10 +247,18 @@ def main():
     genotypes = np.array(genotypes).T
     bim_data = bim_data[bim_data.SNP.isin(keep_snps)]
 
+
 ### Find the left most snp to be included in LD score calculation of snp i ###
     if args.ld_wind_cm:
         coords = list(bim_data['cM'].values)
         block_left = getBlockLefts(coords, args.ld_wind_cm)
+    elif args.ld_wind_kb:
+        coords = list(bim_data['BP'].values)
+        block_left = getBlockLefts(coords, args.ld_wind_kb*1000)
+    elif args.ld_wind_snps:
+        coords = np.array(range(bim_data.shape[0]))
+        block_left = getBlockLefts(coords, args.ld_wind_snps)
+
 
 
 ##### Following code is borrowed from the original LDSC codebase
@@ -316,8 +342,8 @@ def main():
 
     bim_data['L2'] = cor_sum.flatten()
     bim_data_output = bim_data[['CHR','SNP','BP','L2']]
-    filename = "%s/%d.l2.ldscore"%(directory,int(np.unique(bim_data_output['CHR'])))
-    bim_data_output.to_csv(filename, sep="\t", index=False)
+    filename = "%s/%d.l2.ldscore.gz"%(directory,int(np.unique(bim_data_output['CHR'])))
+    bim_data_output.to_csv(filename, sep="\t", index=False, compression='gzip')
 
 if __name__ == "__main__":
     main()
