@@ -15,6 +15,7 @@ Usage: ./calculate_ldsc.py \
 
 To do:
 1. Add support for STRs
+    - Done
 2. Add support for annotations needed for partioned heritability
 
 """
@@ -36,12 +37,13 @@ def str2bool(v):
 
 
 def normalize_gt(X):
-    avg = np.mean(X)
+    ii = ~np.isnan(X)
+    avg = np.mean(X[ii])
+    X[np.logical_not(ii)] = avg
     std = np.std(X)
     if std==0:
         std=1
-    normalized_gt = list((np.array(X)-avg)/std)
-
+    normalized_gt = ((X-avg)/std)
     return normalized_gt
 
 
@@ -89,6 +91,13 @@ def getBlockLefts(coords, max_dist):
     return (block_left)
 
 
+def isSTR(record_alleles_to_bases):
+    if record_alleles_to_bases[0] == 1 and record_alleles_to_bases[1]==1 and len(record_alleles_to_bases.keys())==2:
+        return False
+    else:
+        return True
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--vcf", help="Input VCF File", required=True, type=str)
@@ -99,6 +108,7 @@ def main():
     parser.add_argument("--chunk-size", help="Chunk size for LD Score calculation. Use the default.", required=False, type=int, default=50)
     parser.add_argument("--annot", help="Filename prefix for annotation file for partitioned LD Score estimation.", required=False, type=str)
     parser.add_argument("--region", help="Fetch only chr:start-end from the VCF", required=False, type=str)
+    parser.add_argument("--min-maf", help="Minimum MAF to use for filtering alleles. Default: 0.05", required=False, type=float, default=0.05)
     args = parser.parse_args()
 
 
@@ -133,6 +143,18 @@ def main():
 ### Load the BIM file ###
     bim_data = pd.read_csv(BIM_FILE, names=["CHR","SNP","cM","BP","REF","ALT"], delim_whitespace=True)
     bim_snps = list(bim_data['SNP'].values)
+
+
+### Load Alleles information
+    vcf = VCF(VCF_FILE, samples=samples)
+    if args.region:
+        vcf_iter = vcf(args.region)
+    else:
+        vcf_iter = vcf()
+    alleles_to_bases = {}
+    for v in vcf_iter:
+        alleles = [len(v.REF)]+[len(i) for i in v.ALT]
+        alleles_to_bases[str(v.ID)] = dict(zip(range(len(alleles)), alleles))
 
 
 ### Load Genotypes from the VCF ###
@@ -175,16 +197,33 @@ def main():
         if ID not in bim_snps:
             continue
 
-        alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
-        if 1 in counts: ### exclude singletons
-            continue
+        record_alleles_to_bases = alleles_to_bases[ID]
+        is_str = isSTR(record_alleles_to_bases)
 
-        if callset['samples'].shape[0] in counts: ### Exclude variants with MAF=0
-            continue
 
-        genotypes[count] = (normalize_gt(np.sum(genotype_array[i,:,:], axis=1)))
-        keep_snps.append(ID)
-        count += 1
+        if not is_str:
+            alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
+            if 1 in counts: ### exclude singletons
+                continue
+
+            if callset['samples'].shape[0] in counts: ### Exclude variants with MAF=0
+                continue
+
+            genotypes[count] = (normalize_gt(np.sum(genotype_array[i,:,:], axis=1)))
+            keep_snps.append(ID)
+            count += 1
+
+        else:
+            numSamples = callset['samples'].shape[0]
+            alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
+            counts = counts/numSamples
+            rm_alleles = alleles[np.argwhere(counts<args.min_maf)]
+            filtered_gt = np.where(np.isin(genotype_array[i,:,:], rm_alleles), np.nan, genotype_array[i,:,:]) # remove alleles with MAF < args.min-maf
+            u,inv = np.unique(filtered_gt,return_inverse = True) # map allele index to allele length
+            filtered_gt = np.array([record_alleles_to_bases.get(x,x) for x in u])[inv].reshape(filtered_gt.shape) # map allele index to allele length
+            genotypes[count] = (normalize_gt(np.sum(filtered_gt, axis=1)))
+            keep_snps.append(ID)
+            count += 1
 
     genotypes = genotypes[0:count]
     genotypes = np.array(genotypes).T
@@ -202,10 +241,7 @@ def main():
 
     print("Calculating LD Scores")
 
-    if samples is not None:
-        m, n = len(coords), len(samples)
-    else:
-        m, n = len(coords), callset['samples'].shape[0]
+    m, n = len(coords), callset['samples'].shape[0]
     current_snp = 0
     block_sizes = np.array(np.arange(m) - block_left)
     block_sizes = np.ceil(block_sizes / chunk_size)*chunk_size
