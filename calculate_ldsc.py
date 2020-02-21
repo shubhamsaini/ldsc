@@ -131,9 +131,6 @@ def main():
     chunk_size = args.chunk_size
     directory = args.out
 
-    if not args.annot:
-        annot=None
-
     if args.region:
         region = args.region
     else:
@@ -149,6 +146,7 @@ def main():
             print("--ld-wind-cm requires a BIM file with CM information")
             sys.exit("Terminated")
         else: ### Load the BIM file ###
+            BIM_FILE = args.bim
             bim_data = pd.read_csv(BIM_FILE, names=["CHR","SNP","cM","BP","REF","ALT"], delim_whitespace=True)
             bim_snps = list(bim_data['SNP'].values)
 
@@ -261,6 +259,28 @@ def main():
 
 
 
+
+### Loading Annotation File ###
+    if not args.annot:
+        annot=None
+    else:
+        print("Loading Annotation File")
+        annot_df = pd.read_csv(args.annot, compression="gzip", delim_whitespace=True)
+        annot_df = annot_df[annot_df.SNP.isin(keep_snps)]
+
+        annot_df.SNP = annot_df.SNP.astype("category")
+        annot_df.SNP.cat.set_categories(keep_snps, inplace=True)
+        annot_df.sort_values(["SNP"], inplace=True)
+
+        n_annot, ma = len(annot_df.columns) - 4, len(annot_df)
+        annot = np.array(annot_df.iloc[:,4:])
+        annot_colnames = annot_df.columns[4:]
+
+        if annot.shape[0] != genotypes.shape[1]:
+            sys.exit("The .annot file must contain the same SNPs")
+
+
+
 ##### Following code is borrowed from the original LDSC codebase
 ##### The code finds LD in windows
 #####
@@ -340,8 +360,20 @@ def main():
 
     print("Writing output file")
 
-    bim_data['L2'] = cor_sum.flatten()
-    bim_data_output = bim_data[['CHR','SNP','BP','L2']]
+
+    output_cols = []
+    if args.annot:
+        for i in range(len(annot_colnames)):
+            colname=annot_colnames[i]+"L2"
+            output_cols.append(colname)
+            bim_data[colname] = cor_sum[:,i]
+    else:
+        bim_data['L2'] = cor_sum.flatten()
+        output_cols.append('L2')
+
+    bim_data_output = bim_data[['CHR','SNP','BP']+output_cols]
+
+
     filename = "%s/%d.l2.ldscore.gz"%(directory,int(np.unique(bim_data_output['CHR'])))
     bim_data_output.to_csv(filename, sep="\t", index=False, compression='gzip')
 
