@@ -17,7 +17,9 @@ To do:
 1. Add support for STRs
     - Done
 2. Output M and M_5_50 file
+    - Done
 3. Add support for annotations needed for partioned heritability
+    - Done
 
 """
 import numpy as np
@@ -46,6 +48,9 @@ def normalize_gt(X):
         std=1
     normalized_gt = ((X-avg)/std)
     return normalized_gt
+
+def calcMAF(counts):
+    return np.sum(np.sort(counts)[:-1])
 
 
 def __l2_unbiased__(x, n):
@@ -175,31 +180,8 @@ def main():
 ### Load Genotypes from the VCF ###
     print("Loading Genotypes")
     keep_snps = []
-    # count = 0
-    # vcf = VCF(VCF_FILE, samples=samples)
-    # if args.region:
-    #     vcf_iter = vcf(args.region)
-    # else:
-    #     vcf_iter = vcf()
-    # for v in vcf_iter:
-    #     count = count+1
-    #     if count%1000 == 0:
-    #         print("Processed %d variants"%(count))
-    #
-    #     if str(v.ID) not in bim_snps:
-    #         continue
-    #
-    #     alleles, counts = np.unique(np.array(v.genotypes)[:,0:2].flatten(), return_counts=True)
-    #     if 1 in counts: ### exclude singletons
-    #         continue
-    #
-    #     if len(vcf.samples) in counts: ### Exclude variants with MAF=0
-    #         continue
-    #
-    #     genotypes.append(normalize_gt(list(np.sum(np.array(v.genotypes)[:,0:2], axis=1))))
-    #     keep_snps.append(str(v.ID))
-
-
+    M_out = 0
+    M_5_50_out = 0
     callset = allel.read_vcf(VCF_FILE, region=region, samples=samples)
     genotype_array = callset['calldata/GT']
     genotypes = np.zeros((genotype_array.shape[0],genotype_array.shape[1]))
@@ -218,6 +200,7 @@ def main():
 
 
         if not is_str:
+            numSamples = callset['samples'].shape[0]
             alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
             if 1 in counts: ### exclude singletons
                 continue
@@ -225,6 +208,12 @@ def main():
             if callset['samples'].shape[0] in counts: ### Exclude variants with MAF=0
                 continue
 
+            maf = calcMAF(counts/numSamples)
+            if maf >= 0.05:
+                M_out += 1
+                M_5_50_out += 1
+            else:
+                M_out += 1
             genotypes[count] = (normalize_gt(np.sum(genotype_array[i,:,:], axis=1)))
             keep_snps.append(ID)
             count += 1
@@ -233,6 +222,12 @@ def main():
             numSamples = callset['samples'].shape[0]
             alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
             counts = counts/numSamples
+            maf = calcMAF(counts)
+            if maf >= 0.05:
+                M_out += 1
+                M_5_50_out += 1
+            else:
+                M_out += 1
             rm_alleles = alleles[np.argwhere(counts<args.min_maf)]
             filtered_gt = np.where(np.isin(genotype_array[i,:,:], rm_alleles), np.nan, genotype_array[i,:,:]) # remove alleles with MAF < args.min-maf
             u,inv = np.unique(filtered_gt,return_inverse = True) # map allele index to allele length
@@ -359,8 +354,6 @@ def main():
 ######
 
     print("Writing output file")
-
-
     output_cols = []
     if args.annot:
         for i in range(len(annot_colnames)):
@@ -376,6 +369,17 @@ def main():
 
     filename = "%s/%d.l2.ldscore.gz"%(directory,int(np.unique(bim_data_output['CHR'])))
     bim_data_output.to_csv(filename, sep="\t", index=False, compression='gzip')
+
+
+    filename = "%s/%d.l2.M"%(directory,int(np.unique(bim_data_output['CHR'])))
+    f = open(filename, "w")
+    f.write("%d"%M_out)
+    f.close()
+
+    filename = "%s/%d.l2.M_5_50"%(directory,int(np.unique(bim_data_output['CHR'])))
+    f = open(filename, "w")
+    f.write("%d"%M_5_50_out)
+    f.close()
 
 if __name__ == "__main__":
     main()
