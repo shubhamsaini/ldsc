@@ -6,8 +6,8 @@ shubhamsaini@eng.ucsd.edu
 
 
 Usage: ./calculate_ldsc.py \
---vcf /storage/resources/datasets/SSC_SNP_v3/shapeit.chr22.with.ref.v3.vcf.gz \
---bim /storage/s1saini/pgc_analysis/ldsc/snp_bed/snps.chr22.bim \
+--vcf /storage/s1saini/hipstr_allfilters/phased_feb18/hipstr.chr22.phased.vcf.gz \
+--bim /storage/s1saini/pgc_analysis/ldsc/calculate_ldsc/str_bim/str.chr22.bial.bim \
 --out . \
 --ld-wind-cm 1 \
 --region 22:16788134-17788134
@@ -161,7 +161,7 @@ def main():
 ### Used to create bim_data DF when BIM file not used
     print("Loading meta data information")
     meta_data = []
-    vcf = VCF(VCF_FILE, samples=samples)
+    vcf = VCF(VCF_FILE)
     if args.region:
         vcf_iter = vcf(args.region)
     else:
@@ -182,7 +182,7 @@ def main():
     keep_snps = []
     M_out = 0
     M_5_50_out = 0
-    callset = allel.read_vcf(VCF_FILE, region=region, samples=samples)
+    callset = allel.read_vcf(VCF_FILE, region=region, samples=samples, fields=['samples', 'variants/ID', 'calldata/GT'])
     genotype_array = callset['calldata/GT']
     genotypes = np.zeros((genotype_array.shape[0],genotype_array.shape[1]))
     count = 0
@@ -190,24 +190,22 @@ def main():
     for i in range(genotype_array.shape[0]):
         if i%1000 == 0:
             print("Processed %d variants"%(i))
-
         ID = callset['variants/ID'][i]
         if ID not in bim_snps:
+            continue
+        if ID in keep_snps:
             continue
 
         record_alleles_to_bases = alleles_to_bases[ID]
         is_str = isSTR(record_alleles_to_bases)
-
 
         if not is_str:
             numSamples = callset['samples'].shape[0]
             alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
             if 1 in counts: ### exclude singletons
                 continue
-
             if callset['samples'].shape[0] in counts: ### Exclude variants with MAF=0
                 continue
-
             maf = calcMAF(counts/numSamples)
             if maf >= 0.05:
                 M_out += 1
@@ -229,6 +227,7 @@ def main():
             else:
                 M_out += 1
             rm_alleles = alleles[np.argwhere(counts<args.min_maf)]
+            rm_alleles = np.insert(rm_alleles, 0, -1) ## remove missing alleles
             filtered_gt = np.where(np.isin(genotype_array[i,:,:], rm_alleles), np.nan, genotype_array[i,:,:]) # remove alleles with MAF < args.min-maf
             u,inv = np.unique(filtered_gt,return_inverse = True) # map allele index to allele length
             filtered_gt = np.array([record_alleles_to_bases.get(x,x) for x in u])[inv].reshape(filtered_gt.shape) # map allele index to allele length
@@ -236,9 +235,14 @@ def main():
             keep_snps.append(ID)
             count += 1
 
+    keep_snps = list(set(keep_snps))
     genotypes = genotypes[0:count]
     genotypes = np.array(genotypes).T
     bim_data = bim_data[bim_data.SNP.isin(keep_snps)]
+    bim_data.drop_duplicates(subset='SNP', inplace=True)
+
+    if bim_data.shape[0] != genotypes.shape[1]:
+        sys.exit("The meta data object must contain the same SNPs")
 
 
 ### Find the left most snp to be included in LD score calculation of snp i ###
@@ -262,6 +266,7 @@ def main():
         print("Loading Annotation File")
         annot_df = pd.read_csv(args.annot, compression="gzip", delim_whitespace=True)
         annot_df = annot_df[annot_df.SNP.isin(keep_snps)]
+        annot_df.drop_duplicates(subset='SNP', inplace=True)
 
         annot_df.SNP = annot_df.SNP.astype("category")
         annot_df.SNP.cat.set_categories(keep_snps, inplace=True)
@@ -270,6 +275,8 @@ def main():
         n_annot, ma = len(annot_df.columns) - 4, len(annot_df)
         annot = np.array(annot_df.iloc[:,4:])
         annot_colnames = annot_df.columns[4:]
+
+        print("Loaded %d annotations for %d variants"%(n_annot, ma))
 
         if annot.shape[0] != genotypes.shape[1]:
             sys.exit("The .annot file must contain the same SNPs")
