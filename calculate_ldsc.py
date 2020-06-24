@@ -177,6 +177,9 @@ def main():
         bim_snps = list(bim_data['SNP'].values)
 
 
+### Sort the bim_data DF by BP
+    bim_data = bim_data.sort_values(by="BP")
+    
 ### Load Genotypes from the VCF ###
     print("Loading Genotypes")
     keep_snps = []
