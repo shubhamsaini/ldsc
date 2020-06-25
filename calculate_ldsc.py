@@ -49,9 +49,9 @@ def normalize_gt(X):
     normalized_gt = ((X-avg)/std)
     return normalized_gt
 
-def calcMAF(counts):
-    return np.sum(np.sort(counts)[:-1])
-
+def calcMAF(counts, numSamples):
+    freqs = np.array(counts)/(2.0*numSamples)
+    return np.sum(np.sort(freqs)[:-1])
 
 def __l2_unbiased__(x, n):
     denom = n-2 if n > 2 else n  # allow n<2 for testing purposes
@@ -96,13 +96,12 @@ def getBlockLefts(coords, max_dist):
         block_left[i] = j
     return (block_left)
 
-
+# TODO won't this return true for triallelic snp
 def isSTR(record_alleles_to_bases):
     if record_alleles_to_bases[0] == 1 and record_alleles_to_bases[1]==1 and len(record_alleles_to_bases.keys())==2:
         return False
     else:
         return True
-
 
 def main():
     parser = argparse.ArgumentParser(__doc__)
@@ -116,7 +115,7 @@ def main():
     parser.add_argument("--chunk-size", help="Chunk size for LD Score calculation. Use the default.", required=False, type=int, default=50)
     parser.add_argument("--annot", help="Filename prefix for annotation file for partitioned LD Score estimation.", required=False, type=str)
     parser.add_argument("--region", help="Fetch only chr:start-end from the VCF", required=False, type=str)
-    parser.add_argument("--min-maf", help="Minimum MAF to use for filtering alleles. Default: 0.05", required=False, type=float, default=0.05)
+    parser.add_argument("--min-maf", help="Minimum MAF to use for filtering alleles.", required=False, type=float, default=0.0)
     args = parser.parse_args()
 
 
@@ -176,17 +175,16 @@ def main():
         bim_data = pd.DataFrame(meta_data, columns=["CHR","SNP","BP"])
         bim_snps = list(bim_data['SNP'].values)
 
-
-### Sort the bim_data DF by BP
+    ### Sort the bim_data DF by BP
     bim_data = bim_data.sort_values(by="BP")
     
-### Load Genotypes from the VCF ###
+    ### Load Genotypes from the VCF ###
     print("Loading Genotypes")
     keep_snps = []
     M_out = 0
     M_5_50_out = 0
     callset = allel.read_vcf(VCF_FILE, region=region, samples=samples, fields=['samples', 'variants/ID', 'calldata/GT'])
-    genotype_array = callset['calldata/GT']
+    genotype_array = callset['calldata/GT'] # dims [numvariants, numsamples, 2]
     genotypes = np.zeros((genotype_array.shape[0],genotype_array.shape[1]))
     count = 0
 
@@ -202,41 +200,28 @@ def main():
         record_alleles_to_bases = alleles_to_bases[ID]
         is_str = isSTR(record_alleles_to_bases)
 
-        if not is_str:
-            numSamples = callset['samples'].shape[0]
-            alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
-            if 1 in counts: ### exclude singletons
-                continue
-            if callset['samples'].shape[0] in counts: ### Exclude variants with MAF=0
-                continue
-            maf = calcMAF(counts/numSamples)
-            if maf >= 0.05:
-                M_out += 1
-                M_5_50_out += 1
-            else:
-                M_out += 1
-            genotypes[count] = (normalize_gt(np.sum(genotype_array[i,:,:], axis=1)))
-            keep_snps.append(ID)
-            count += 1
-
+        numSamples = callset['samples'].shape[0]
+        alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
+        maf = calcMAF(counts, numSamples)
+        if maf == 0 or maf == 1: continue # skip if no variation
+        if maf >= 0.05:
+            M_out += 1
+            M_5_50_out += 1
         else:
-            numSamples = callset['samples'].shape[0]
-            alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
-            counts = counts/numSamples
-            maf = calcMAF(counts)
-            if maf >= 0.05:
-                M_out += 1
-                M_5_50_out += 1
-            else:
-                M_out += 1
-            rm_alleles = alleles[np.argwhere(counts<args.min_maf)]
-            rm_alleles = np.insert(rm_alleles, 0, -1) ## remove missing alleles
-            filtered_gt = np.where(np.isin(genotype_array[i,:,:], rm_alleles), np.nan, genotype_array[i,:,:]) # remove alleles with MAF < args.min-maf
-            u,inv = np.unique(filtered_gt,return_inverse = True) # map allele index to allele length
-            filtered_gt = np.array([record_alleles_to_bases.get(x,x) for x in u])[inv].reshape(filtered_gt.shape) # map allele index to allele length
-            genotypes[count] = (normalize_gt(np.sum(filtered_gt, axis=1)))
-            keep_snps.append(ID)
-            count += 1
+            M_out += 1
+
+        if not is_str:
+            genotypes[count] = normalize_gt(np.sum(genotype_array[i,:,:], axis=1))
+        else:
+            freqs = counts/(2.0*numSamples)
+            rm_alleles = alleles[np.argwhere(freqs<args.min_maf)] ## get list of alleles with freq < minmaf
+            rm_alleles = np.insert(rm_alleles, 0, -1) ## remove missing alleles, which are coded as -1
+            filtered_gt = np.where(np.isin(genotype_array[i,:,:], rm_alleles), np.nan, genotype_array[i,:,:]) # Set alleles in rm_alleles to np.nan
+            uniq_alleles, uniq_alleles_ind = np.unique(filtered_gt, return_inverse=True) # Note, uniq_alleles often has many "nan"'s in it
+            filtered_gt_lens = np.array([record_alleles_to_bases.get(x, np.nan) for x in uniq_alleles])[uniq_alleles_ind].reshape(filtered_gt.shape)
+            genotypes[count] = normalize_gt(np.sum(filtered_gt_lens, axis=1))
+        keep_snps.append(ID)
+        count += 1
 
     keep_snps = list(set(keep_snps))
     genotypes = genotypes[0:count]
@@ -246,7 +231,6 @@ def main():
 
     if bim_data.shape[0] != genotypes.shape[1]:
         sys.exit("The meta data object must contain the same SNPs")
-
 
 ### Find the left most snp to be included in LD score calculation of snp i ###
     if args.ld_wind_cm:
@@ -258,9 +242,6 @@ def main():
     elif args.ld_wind_snps:
         coords = np.array(range(bim_data.shape[0]))
         block_left = getBlockLefts(coords, args.ld_wind_snps)
-
-
-
 
 ### Loading Annotation File ###
     if not args.annot:
@@ -283,7 +264,6 @@ def main():
 
         if annot.shape[0] != genotypes.shape[1]:
             sys.exit("The .annot file must contain the same SNPs")
-
 
 
 ##### Following code is borrowed from the original LDSC codebase
