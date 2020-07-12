@@ -177,12 +177,12 @@ def main():
 
     ### Sort the bim_data DF by BP
     bim_data = bim_data.sort_values(by="BP")
-    
+
     ### Load Genotypes from the VCF ###
     print("Loading Genotypes")
     keep_snps = []
-    M_out = 0
-    M_5_50_out = 0
+    M_out = [0,0]
+    M_5_50_out = [0,0]
     callset = allel.read_vcf(VCF_FILE, region=region, samples=samples, fields=['samples', 'variants/ID', 'calldata/GT'])
     genotype_array = callset['calldata/GT'] # dims [numvariants, numsamples, 2]
     genotypes = np.zeros((genotype_array.shape[0],genotype_array.shape[1]))
@@ -204,15 +204,20 @@ def main():
         alleles, counts = np.unique(genotype_array[i,:,:], return_counts=True)
         maf = calcMAF(counts, numSamples)
         if maf == 0 or maf == 1: continue # skip if no variation
-        if maf >= 0.05:
-            M_out += 1
-            M_5_50_out += 1
-        else:
-            M_out += 1
 
         if not is_str:
+            if maf >= 0.05:
+                M_out[1] += 1
+                M_5_50_out[1] += 1
+            else:
+                M_out[1] += 1
             genotypes[count] = normalize_gt(np.sum(genotype_array[i,:,:], axis=1))
         else:
+            if maf >= 0.05:
+                M_out[0] += 1
+                M_5_50_out[0] += 1
+            else:
+                M_out[0] += 1
             freqs = counts/(2.0*numSamples)
             rm_alleles = alleles[np.argwhere(freqs<args.min_maf)] ## get list of alleles with freq < minmaf
             rm_alleles = np.insert(rm_alleles, 0, -1) ## remove missing alleles, which are coded as -1
@@ -363,12 +368,18 @@ def main():
 
     filename = "%s/%d.l2.M"%(directory,int(np.unique(bim_data_output['CHR'])))
     f = open(filename, "w")
-    f.write("%d"%M_out)
+    if args.annot:
+        f.write("%d %d"%(M_out[0], M_out[1]))
+    else:
+        f.write("%d"%(M_out[0]+M_out[1]))
     f.close()
 
     filename = "%s/%d.l2.M_5_50"%(directory,int(np.unique(bim_data_output['CHR'])))
     f = open(filename, "w")
-    f.write("%d"%M_5_50_out)
+    if args.annot:
+        f.write("%d %d"%(M_5_50_out[0], M_5_50_out[1]))
+    else:
+        f.write("%d"%(M_5_50_out[0]+M_5_50_out[1]))
     f.close()
 
 if __name__ == "__main__":
